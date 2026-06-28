@@ -1,0 +1,13 @@
+spring:
+  application:
+    name: payment-ledger-platform
+  datasource:
+    url: ${DATABASE_URL:jdbc:postgresql://localhost:5432/ledger}
+    username: ${DATABASE_USER:ledger}
+    password: ${DATABASE_PASSWORD:ledger}
+  flyway:
+    enabled: true
+
+server:
+  port: 8080
+
