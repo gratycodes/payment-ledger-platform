@@ -1,106 +1,81 @@
-# Payment Ledger Platform
+# payment-ledger-platform
 
-Payment Ledger Platform is a backend engineering showcase for a double-entry ledger, idempotent payment posting, settlement reconciliation, and event-driven financial workflows.
+A Spring Boot service that posts double-entry journal entries through an idempotent REST API. It is a small, readable starting point for a payments ledger: the domain rules are implemented and tested, while persistence, the outbox publisher and reconciliation are designed but not yet built.
 
-This repository is designed to demonstrate senior backend engineering skills: correctness, transaction boundaries, domain modeling, reliability, observability, and system design for money movement.
+## Why
 
-## What This Shows
+Money movement has to stay correct under client retries and partial failures. This project shows how I model that core: balanced debit/credit legs, amounts in minor units, immutable entries, and idempotency as part of the API contract rather than an afterthought.
 
-- Double-entry accounting rules with explicit debit and credit legs
-- Idempotency keys for retry-safe payment APIs
-- Clean architecture boundaries between API, application, domain, and infrastructure
-- Settlement and reconciliation concepts without depending on any employer-specific knowledge
-- PostgreSQL persistence model with audit-friendly append-only records
-- Event outbox pattern for reliable downstream publishing
-- Tests for domain invariants that must never regress
+## What works today
 
-## Core Use Cases
+- `POST /ledger/journal-entries` with a required `Idempotency-Key` header and request validation.
+- Domain rules in `JournalEntry`: at least two lines, every amount positive, and the entry must balance per currency (debits equal credits), otherwise it is rejected.
+- Money as `long` minor units with `java.util.Currency`; no floating point.
+- Idempotent posting: a repeated key returns the original entry with status `duplicate_accepted` instead of posting again. Uses `putIfAbsent` so concurrent retries cannot double-post.
+- Layered structure: `api` → `application` → `domain`, with `infra` behind a repository interface.
+- PostgreSQL schema (Flyway `V1`) for journal entries, ledger lines and an outbox table, with a unique constraint on the idempotency key.
+- Architecture decisions in `docs/adr/` (double-entry ledger, outbox pattern) and `docs/system-design.md`.
 
-- Post a payment authorization or capture into the ledger
-- Reject unbalanced journal entries
-- Prevent duplicate posting during client retries
-- Query account balances from immutable ledger lines
-- Track settlement batches and reconciliation exceptions
-- Publish ledger events after commit through an outbox
+## Not built yet
 
-## Architecture
+- Entries are stored in an in-memory repository (`InMemoryJournalEntryRepository`), so data is lost on restart. The Postgres tables exist but nothing reads or writes them yet.
+- The outbox table exists, but no outbox writer or publisher, and no Kafka integration.
+- No balance queries, settlement or reconciliation.
+- Domain rule violations (for example an unbalanced entry) currently surface as HTTP 500; there is no error-mapping handler yet.
+- Tests cover the domain invariants only; there are no API or integration tests yet.
 
-```mermaid
-flowchart LR
-  Client["Payment Client"] --> API["Ledger API"]
-  API --> App["Application Service"]
-  App --> Domain["Ledger Domain"]
-  App --> DB[("PostgreSQL")]
-  App --> Outbox["Outbox Table"]
-  Publisher["Outbox Publisher"] --> Broker["Kafka / Event Bus"]
-  Outbox --> Publisher
-```
+## Run it
 
-## Tech Stack
-
-- Java 21
-- Spring Boot 3
-- Maven
-- PostgreSQL
-- Flyway migrations
-- JUnit 5
-- Docker Compose
-- GitHub Actions
-
-## Repository Layout
-
-```text
-src/main/java/com/gratycodes/ledger/
-  api/            HTTP controllers and request DTOs
-  application/    use cases and transaction orchestration
-  domain/         ledger entities, value objects, invariants
-  infra/          persistence and outbox adapters
-docs/
-  adr/            architecture decisions
-infra/            local infrastructure
-```
-
-## Quick Start
+Requires Java 21, Maven and Docker.
 
 ```bash
-docker compose -f infra/docker-compose.yml up -d
+docker compose -f infra/docker-compose.yml up -d   # Postgres on localhost:5433 (Flyway applies the schema on startup)
 mvn test
 mvn spring-boot:run
 ```
 
-## Example API
+Post an entry:
 
-```http
-POST /ledger/journal-entries
-Idempotency-Key: capture_123
-Content-Type: application/json
-
-{
-  "reference": "payment_capture_123",
-  "currency": "EUR",
-  "lines": [
-    { "accountId": "merchant_cash", "direction": "DEBIT", "amountMinor": 1999 },
-    { "accountId": "platform_payable", "direction": "CREDIT", "amountMinor": 1999 }
-  ]
-}
+```bash
+curl -i -X POST localhost:8080/ledger/journal-entries \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: capture_123' \
+  -d '{
+    "reference": "payment_capture_123",
+    "currency": "EUR",
+    "lines": [
+      { "accountId": "merchant_cash",    "direction": "DEBIT",  "amountMinor": 1999 },
+      { "accountId": "platform_payable", "direction": "CREDIT", "amountMinor": 1999 }
+    ]
+  }'
 ```
 
-## Engineering Notes
+Returns `202 Accepted` with the entry ID and status `posted`. Sending the same request again returns the same ID with status `duplicate_accepted`.
 
-- Money is represented in minor units to avoid floating-point errors.
-- Ledger entries are immutable after posting.
-- A journal entry must balance per currency before it can be accepted.
-- Idempotency is treated as part of the business contract, not middleware decoration.
-- Outbox records are written in the same transaction as ledger entries.
+## Layout
 
-## Roadmap
+```text
+src/main/java/com/gratycodes/ledger/
+  api/            controller and request DTOs
+  application/    PostJournalEntryService, repository port, command/result types
+  domain/         JournalEntry, LedgerLine, Money, Direction (invariants live here)
+  infra/          in-memory repository
+src/main/resources/db/migration/   Flyway schema
+docs/             system design and ADRs
+infra/            Docker Compose for Postgres
+```
 
-- [x] Domain model and balance invariants
-- [x] API and application service skeleton
-- [x] PostgreSQL schema and Docker Compose
-- [x] CI workflow
-- [ ] Repository implementation with jOOQ or Spring Data JDBC
-- [ ] Reconciliation batch workflow
-- [ ] Outbox publisher with retry and dead-letter tracking
-- [ ] Load test script for posting throughput
+## Stack
 
+Java 21, Spring Boot 3.3, Maven, Flyway, PostgreSQL 16, JUnit 5, Docker Compose, GitHub Actions.
+
+## Next steps
+
+1. JDBC repository that writes the entry, its lines and an outbox event in one transaction.
+2. Outbox publisher to Kafka with retries and dead-letter tracking.
+3. Exception handler mapping domain errors to 400/409.
+4. Account balance query and API tests.
+
+## License
+
+MIT
